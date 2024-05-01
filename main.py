@@ -2,10 +2,6 @@ import json
 
 import boto3
 
-from dynamo_cache_service import DynamoCacheService
-from github_api_service import get_repo_file_contents
-from open_ai_service import call_chatgpt
-
 
 def lambda_handler(event, context):
     try:
