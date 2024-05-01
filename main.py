@@ -1,8 +1,10 @@
 import json
 
+import boto3
+
+from dynamo_cache_service import DynamoCacheService
 from github_api_service import get_repo_file_contents
 from open_ai_service import call_chatgpt
-from dynamo_cache_service import DynamoCacheService
 
 
 def lambda_handler(event, context):
@@ -10,32 +12,12 @@ def lambda_handler(event, context):
 
 
 
-        github_url = event['queryStringParameters']['githubURL']
-        question = event['queryStringParameters']['question']
-        _, _, username, repo_name = github_url.rstrip('/').split('/')[-4:]
+        # Get the search query from the event
+        recent_searches = get_recent_searches()
 
-        dynamo_rk = f"{username}{repo_name}"
+        # Clean up old searches
+        clean_up_old_searches()
 
-        dynamo_cache_service = DynamoCacheService('questions')
-
-        cache_data = dynamo_cache_service.get_question(question, dynamo_rk)
-
-        if cache_data is not None:
-            return {
-                'statusCode': 200,
-                'headers': {
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
-                },
-                'body': json.dumps(cache_data['answer'])
-            }
-
-        file_content = get_repo_file_contents(github_url)
-
-        open_ai_response = call_chatgpt(question, file_content)
-
-        dynamo_cache_service.put_question(question, dynamo_rk, open_ai_response)
         
         return {
             'statusCode': 200,
@@ -44,7 +26,9 @@ def lambda_handler(event, context):
                     'Access-Control-Allow-Methods': '*',
                     'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
                 },
-            'body': json.dumps(open_ai_response)
+            'body': json.dumps({
+                'recentSearches': recent_searches
+            })
         }
     except Exception as e:
         print(f"Error: {e}")
@@ -58,3 +42,34 @@ def lambda_handler(event, context):
                 },
         }
     
+
+def get_recent_searches():
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('recent_repos')
+    
+    response = table.scan(Limit=1000)  # Consider using a more efficient query method in the future
+    items = response['Items']
+    # Sort by timestamp in descending order and pick the top 3, then extract only the URLs
+    recent_urls = [item['repositoryURL'] for item in sorted(items, key=lambda x: int(x['searchTimestamp']), reverse=True)[:3]]
+    return recent_urls
+
+    
+def clean_up_old_searches():
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('recent_repos')
+    
+    # Scan to get all items
+    response = table.scan()
+    items = response['Items']
+    
+    # If there are more than 3 items, delete the oldest
+    if len(items) > 3:
+        # Sort items by timestamp
+        sorted_items = sorted(items, key=lambda x: x['searchTimestamp'])
+        # Delete all but the last three items
+        for item in sorted_items[:-3]:
+            table.delete_item(
+                Key={
+                    'searchTimestamp': item['searchTimestamp']
+                }
+            )
